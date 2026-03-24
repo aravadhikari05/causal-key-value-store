@@ -1,5 +1,7 @@
 # Distributed Key–Value Store with Causal Consistency
 
+<img src="screenshot.png" alt="Interactive CLI demo" width="640" />
+
 This project implements a distributed, sharded key–value store that provides causal consistency using vector clocks and gossip-based replication. The system supports dynamic view changes, resharding, and fault tolerance through asynchronous communication between nodes.
 
 The code was developed for a distributed systems class. So far, this is my favorite class I've taken so far, and I learned many concepts:
@@ -14,79 +16,97 @@ The code was developed for a distributed systems class. So far, this is my favor
 
 This was the final assignment of the class
 
----
-
-## Causal Consistency Model
-
-Clients attach causal metadata (vector clocks) to requests.
-
-* **Reads block** (up to a timeout) until the node’s state satisfies the client’s causal dependencies
-* **Writes increment** the local vector clock and propagate dependencies
-* **Concurrent writes** are resolved deterministically using:
-
-  1. Logical timestamp
-  2. Node ID tie-breaker
+After finishing the assignment, I wanted to be able to actually demo the project and show how the system behaves when nodes fail, shards get destroyed, and keys get migrated. I refactored the whole thing into a single-process CLI simulator that lets you test the distributed system interactively from the command line.
 
 ---
 
-## Gossip Protocol
+## How it Works
 
-Two forms of gossip are used:
+The same core concepts from the original assignment are preserved — vector clocks, gossip protocol, sharding, causal reads and writes — but instead of running across real network nodes, everything runs in-memory in one process. Gossip runs synchronously after each write operation and also fires automatically on a background timer every 10 seconds, so you can see what propagated where.
 
-1. **Local shard gossip**
+### Causal Consistency
 
-   * Exchanges key-value data and vector clocks
-2. **Global gossip**
+Clients attach causal metadata (vector clocks) to every request.
 
-   * Shares vector clocks across shards to preserve causality
+* **Writes** increment the local vector clock and propagate dependencies through gossip
+* **Reads** check that the node's clock satisfies the client's causal dependencies before returning
+* **Concurrent writes** are resolved deterministically using logical timestamp, then node ID as a tie-breaker
 
-Gossip runs periodically in the background and ensures eventual convergence.
+### Gossip Protocol
 
----
+Two forms of gossip run after every operation:
 
-## Sharding & View Changes
+1. **Local shard gossip:** nodes within the same shard exchange key-value data and vector clocks
+2. **Global gossip:** one node per shard shares its clock with one node in every other shard, preserving causality across shard boundaries
 
-* Keys are assigned to shards using a hash-based partitioning function
-* The `/view` endpoint updates the system membership
-* On view changes:
+### Sharding
 
-  * Keys may be migrated to new shards
-  * Vector clocks and dependencies are preserved
-  * Gossip restarts once the new view stabilizes
+Keys are assigned to shards using MD5 hashing mod the total shard count. When you add or remove a shard, the system rehashes all keys and migrates them to their new owners automatically.
 
 ---
 
-## API Overview
-
-### Client Operations
-
-* `PUT /data/{key}`
-  Stores a value with causal metadata
-
-* `GET /data/{key}`
-  Retrieves a value once causal dependencies are satisfied
-
-* `GET /data`
-  Retrieves all locally owned keys
-
-### Internal Operations
-
-* `/gossip` — shard-level gossip
-* `/global_gossip` — cross-shard clock sharing
-* `/view` — update cluster membership
-* `/move` — key migration during resharding
-
----
-
-## Running the System
-
-Each node expects environment variables:
+## Running It
 
 ```bash
-export NODE_IDENTIFIER=<unique_int_id>
+pip install rich
+python3 main.py
 ```
 
-Nodes are started independently and joined using the `/view` endpoint.
+## Commands
+
+**Data**
+
+| Command | Description |
+|---|---|
+| `put <key> <value>` | Store a key-value pair |
+| `get <key>` | Retrieve a value |
+| `delete <key>` | Delete a key (writes a tombstone) |
+
+**Cluster**
+
+| Command | Description |
+|---|---|
+| `init <shards> <nodes_per_shard>` | Create a cluster |
+| `state` | Show the full cluster state |
+| `gossip` | Run a manual gossip round |
+
+**Nodes & Shards**
+
+| Command | Description |
+|---|---|
+| `kill_node <node_id>` | Simulate a node failure |
+| `kill_shard <shard_id>` | Kill all nodes in a shard |
+| `revive_node <node_id>` | Bring a dead node back online |
+| `add_node <shard_id>` | Add a node to a shard |
+| `add_shard` | Add a new shard and reshard |
+| `remove_shard <shard_id>` | Remove a shard and reshard |
+| `reshard <shard_count>` | Change the total number of shards |
+
+**Testing**
+
+| Command | Description |
+|---|---|
+| `test` | Run the full test suite |
+
+After each operation the simulator prints which shard and node handled the request, how the vector clocks changed, and what gossip propagated. A background gossip round also fires automatically every 10 seconds.
 
 ---
 
+## File Structure
+
+```
+main.py                 entry point
+requirements.txt        dependencies
+
+kvstore/                main package
+    clock.py            vector clock operations
+    value.py            value data class
+    node.py             single node — kv store, clocks, put/get/gossip logic
+    shard.py            shard — node collection, local gossip, request routing
+    cluster.py          cluster — sharding, global gossip, resharding, fault handling
+    display.py          terminal output formatting
+    cli.py              interactive REPL
+
+tests/
+    tests.py            full test suite
+```
